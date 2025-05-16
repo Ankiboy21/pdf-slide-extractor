@@ -1,49 +1,53 @@
-from flask import Flask, request, jsonify
-import fitz  # PyMuPDF
-import tempfile
 import os
+import tempfile
+import fitz  # PyMuPDF
 import openai
+from flask import Flask, request, jsonify, send_file
+from genanki import Model, Note, Deck, Package
 
-openai.api_key = os.getenv("OPENAI_API_KEY")  # Set this in Render environment settings
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 app = Flask(__name__)
 
-def generate_flashcard(slide_text):
-    prompt = f"""
-    Turn the following slide text into a single high-quality Anki flashcard.
+model = Model(
+    1607392319,
+    "Simple Model",
+    fields=[{"name": "Question"}, {"name": "Answer"}],
+    templates=[{
+        "name": "Card 1",
+        "qfmt": "{{Question}}",
+        "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}"
+    }]
+)
 
-    Slide content:
-    """
-    {slide_text}
-    """
+def create_anki_deck(slides, deck_name="Generated Deck"):
+    deck = Deck(2059400110, deck_name)
+    for slide in slides:
+        question = f"What is on slide {slide['slide_number']}?"
+        answer = f"{slide['flashcard']}<br><br><i>(Slide {slide['slide_number']})</i>"
+        note = Note(model=model, fields=[question, answer])
+        deck.add_note(note)
 
-    Format strictly as:
-    question: ...
-    answer: ...
-    explanation: ...
-    """
+    temp_apkg = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
+    Package(deck).write_to_file(temp_apkg.name)
+    return temp_apkg.name
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        content = response.choices[0].message["content"]
-        parts = {line.split(":")[0].strip(): ":".join(line.split(":")[1:]).strip() for line in content.split("\n") if ":" in line}
-        return {
-            "question": parts.get("question", ""),
-            "answer": parts.get("answer", ""),
-            "explanation": parts.get("explanation", "")
-        }
-    except Exception as e:
-        return {
-            "question": "Error generating card.",
-            "answer": str(e),
-            "explanation": "OpenAI request failed."
-        }
+def generate_flashcard_from_text(text):
+    prompt = f"""Generate a concise flashcard based on the following lecture slide text. Focus on clarity and important facts.
+Slide Content:
+{text}"""
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant that creates clear, concise Anki flashcards."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7,
+        max_tokens=300
+    )
+    return response.choices[0].message.content.strip()
 
-@app.route('/extract-pdf', methods=['POST'])
+@app.route("/extract-pdf", methods=["POST"])
 def extract_pdf():
     if 'file' not in request.files:
         return jsonify({"error": "No file provided"}), 400
@@ -54,17 +58,21 @@ def extract_pdf():
         pdf_file.save(temp.name)
         doc = fitz.open(temp.name)
 
-        cards = []
+        slides = []
         for i, page in enumerate(doc, start=1):
             text = page.get_text().strip()
             if text:
-                card = generate_flashcard(text)
-                card["slide_number"] = i
-                cards.append(card)
+                flashcard = generate_flashcard_from_text(text)
+                slides.append({
+                    "slide_number": i,
+                    "flashcard": flashcard
+                })
 
+        doc.close()
         os.remove(temp.name)
 
-    return jsonify({"cards": cards})
+    apkg_path = create_anki_deck(slides)
+    return send_file(apkg_path, as_attachment=True)
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
