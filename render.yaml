@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: pdf-slide-extractor
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python main.py
+    autoDeploy: false
