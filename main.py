@@ -48,10 +48,28 @@ def generate_apkg():
 
     # ✅ Build Anki model and deck
     model = Model(
-        1607392319, "Simple Model",
-        fields=[{"name": "Question"}, {"name": "Answer"}],
-        templates=[{
-            "name": "Card 1",
-            "qfmt": "{{Question}}",
-            "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}"
+        1607392319,
+        "Simple Model",
+        fields=[
+            {"name": "Question"},
+            {"name": "Answer"}
+        ],
+        templates=[
+            {
+                "name": "Card 1",
+                "qfmt": "{{Question}}",
+                "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}"
+            }
+        ]
+    )
 
+    deck = Deck(20504900110, deck_name)
+
+    for c in cards:
+        ans = f"{c['answer']}<br><br><i>{c['explanation']}</i> (Slide {c['slide_number']})"
+        deck.add_note(Note(model=model, fields=[c["question"], ans]))
+
+    tmp_pkg = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
+    Package(deck).write_to_file(tmp_pkg.name)
+
+    return send_file(tmp_pkg.name, as_attachment=True, download_name=f"{deck_name}.apkg")
