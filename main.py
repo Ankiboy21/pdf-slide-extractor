@@ -30,7 +30,6 @@ def extract_text():
 
     return jsonify({"slides": slides})
 
-
 # --- Endpoint to generate .apkg Anki deck ---
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
@@ -69,24 +68,90 @@ def generate_apkg():
             "question": c.get("question") or c.get("Question") or f"Card {idx}",
             "answer": c.get("answer") or c.get("Answer") or "",
             "explanation": c.get("explanation") or c.get("Explanation") or "",
+            "image": c.get("image") or c.get("Image") or "",
             "slide_number": c.get("slide_number") or idx
         })
 
+    # Define the Anki card model
     model = Model(
         1607392319,
-        "Simple Model",
-        fields=[{"name": "Question"}, {"name": "Answer"}],
+        "Styled Lecture Model",
+        fields=[
+            {"name": "Question"},
+            {"name": "Answer"},
+            {"name": "Explanation"},
+            {"name": "Image"},
+        ],
         templates=[{
             "name": "Card 1",
-            "qfmt": "{{Question}}",
-            "afmt": "{{FrontSide}}<hr id=answer>{{Answer}}"
-        }]
+            "qfmt": "<div class='question'>{{Question}}</div>",
+            "afmt": """
+<div class='question'>{{Question}}</div>
+<hr>
+<div class='answer'>{{Answer}}</div>
+<div class='explanation'>{{Explanation}}</div>
+<div class='image'>{{Image}}</div>
+"""
+        }],
+        css="""
+.card {
+    font-family: Arial;
+    font-size: 26px;
+    text-align: center;
+    background-color: #1e1e1e;
+    color: #ffffff;
+}
+
+.question {
+    font-size: 28px;
+    margin-bottom: 10px;
+}
+
+.answer {
+    color: #4da6ff;
+    font-weight: bold;
+    margin: 8px 0;
+}
+
+.explanation {
+    color: #ff66cc;
+    font-style: italic;
+    margin-top: 10px;
+}
+
+.mnemonic {
+    color: #ff66cc;
+    font-style: italic;
+    margin-top: 6px;
+}
+
+.image {
+    color: #aaaaaa;
+    font-size: 18px;
+    margin-top: 12px;
+}
+
+.card img {
+  display: block;
+  margin: 0 auto;
+  transform: scale(0.60);
+  transform-origin: center;
+  transition: transform 0.3s ease-in-out;
+  cursor: pointer;
+}
+
+.card img:hover {
+  transform: scale(1);
+}
+"""
     )
 
+    # Create the Anki deck
     deck = Deck(20504900110, deck_name)
     for c in cards:
-        answer_field = f"{c['answer']}<br><br><i>{c['explanation']}</i> (Slide {c['slide_number']})"
-        note = Note(model=model, fields=[c["question"], answer_field])
+        answer_field = c['answer']
+        explanation_field = f"{c['explanation']} (Slide {c['slide_number']})"
+        note = Note(model=model, fields=[c["question"], answer_field, explanation_field, c["image"]])
         deck.add_note(note)
 
     tmp_apkg = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
