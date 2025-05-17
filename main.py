@@ -60,22 +60,13 @@ def generate_apkg():
 
     # Add every card from the flat list
     for idx, card in enumerate(cards, start=1):
-        question = str(card.get("question", f"Card {idx}") or f"Card {idx}")
-        answer   = str(card.get("answer", "") or "")
-        expl     = str(card.get("explanation", "") or "")
-        slide_no = str(card.get("slide_number", idx))
+        question = card.get("question", f"Card {idx}")
+        answer   = card.get("answer", "")
+        expl     = card.get("explanation", "")
+        slide_no = card.get("slide_number", idx)
 
         answer_field = f"{answer}<br><br><i>{expl}</i> (Slide {slide_no})"
-
-        # Log each card being added (optional)
-        print(f"Adding card {idx}:\nQ: {question}\nA: {answer}\nExpl: {expl}\n")
-
-        note = Note(
-            model=anki_model,
-            fields=[question, answer_field],
-            guid=str(hash(question))  # Prevent duplicate errors
-        )
-
+        note = Note(model=anki_model, fields=[question, answer_field])
         deck.add_note(note)
 
     # Export deck
@@ -89,7 +80,7 @@ def generate_apkg():
         download_name=f"{deck_name}.apkg"
     )
 
-
 # --- Run app ---
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
