@@ -8,7 +8,8 @@ from genanki import Model, Note, Deck, Package
 
 app = Flask(__name__)
 
-# --- Endpoint to extract slide text from PDF ---
+IMAGE_FOLDER = "images"  # Change this to wherever your image files are stored
+
 @app.route("/extract-text", methods=["POST"])
 def extract_text():
     if 'file' not in request.files:
@@ -30,12 +31,11 @@ def extract_text():
 
     return jsonify({"slides": slides})
 
-# --- Endpoint to generate .apkg Anki deck ---
+
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
     data = request.get_json(silent=True)
 
-    # Handle stringified JSON if Make sends as string
     if isinstance(data, str):
         try:
             data = json.loads(data)
@@ -45,7 +45,6 @@ def generate_apkg():
     if data is None:
         return jsonify({"error": "Body was not valid JSON"}), 400
 
-    # Accept array or object with cards
     if isinstance(data, list):
         raw_cards, deck_name = data, "Lecture Deck"
     elif isinstance(data, dict):
@@ -54,25 +53,37 @@ def generate_apkg():
     else:
         return jsonify({"error": "Bad payload shape"}), 400
 
-    # Flatten arrays if needed
     if raw_cards and isinstance(raw_cards[0], list):
         raw_cards = list(chain.from_iterable(raw_cards))
 
     if not raw_cards:
         return jsonify({"error": "Missing cards"}), 400
 
-    # Normalize card keys
     cards = []
+    media_files = []
+
     for idx, c in enumerate(raw_cards, 1):
+        image_html = c.get("image") or c.get("Image") or ""
+
+        # Try to extract image filename from <img src='filename'>
+        image_filename = ""
+        if "<img src='" in image_html:
+            try:
+                image_filename = image_html.split("<img src='")[1].split("'")[0]
+                full_path = os.path.join(IMAGE_FOLDER, image_filename)
+                if os.path.exists(full_path):
+                    media_files.append(full_path)
+            except IndexError:
+                pass  # malformed HTML won't crash it
+
         cards.append({
             "question": c.get("question") or c.get("Question") or f"Card {idx}",
             "answer": c.get("answer") or c.get("Answer") or "",
             "explanation": c.get("explanation") or c.get("Explanation") or "",
-            "image": c.get("image") or c.get("Image") or "",
+            "image": image_html,
             "slide_number": c.get("slide_number") or idx
         })
 
-    # Define the Anki card model
     model = Model(
         1607392319,
         "Styled Lecture Model",
@@ -146,21 +157,22 @@ def generate_apkg():
 """
     )
 
-    # Create the Anki deck
     deck = Deck(20504900110, deck_name)
+
     for c in cards:
         answer_field = c['answer']
         explanation_field = f"{c['explanation']} (Slide {c['slide_number']})"
-        note = Note(model=model, fields=[c["question"], answer_field, explanation_field, c["image"]])
+        note = Note(model=model, fields=[
+            c["question"], answer_field, explanation_field, c["image"]
+        ])
         deck.add_note(note)
 
     tmp_apkg = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
-    Package(deck).write_to_file(tmp_apkg.name)
+    Package(deck, media_files=media_files).write_to_file(tmp_apkg.name)
 
     return send_file(tmp_apkg.name, as_attachment=True, download_name=f"{deck_name}.apkg")
 
 
-# --- Optional route to test if server is running ---
 @app.route("/", methods=["GET"])
 def home():
     return "Server is running ✅", 200
