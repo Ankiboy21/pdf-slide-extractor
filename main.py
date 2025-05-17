@@ -1,8 +1,12 @@
+import os
 import json
-from itertools import chain
-from flask import request, jsonify, send_file
-from genanki import Model, Note, Deck, Package
 import tempfile
+from itertools import chain
+import fitz
+from flask import Flask, request, jsonify, send_file
+from genanki import Model, Note, Deck, Package
+
+app = Flask(__name__)
 
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
