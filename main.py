@@ -33,14 +33,17 @@ def extract_text():
     return jsonify({"slides": slides})
 
 
-# --- Step 3: Accept GPT-generated flashcards + build Anki deck ---
+# --- Step 3: Accept GPT-generated flashcards (flat array) + build Anki deck ---
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
-    data = request.get_json()
-    if not data or "slides" not in data:
-        return jsonify({"error": "Missing slide data"}), 400
+    # force=True lets Flask parse raw JSON strings if Make sends them as text
+    data = request.get_json(force=True)
 
-    slides = data["slides"]
+    cards = data.get("cards")
+    if not cards:
+        return jsonify({"error": "Missing cards"}), 400
+
+    deck_name = data.get("deck_name", "Lecture Deck")
 
     anki_model = Model(
         1607392319,
@@ -53,19 +56,29 @@ def generate_apkg():
         }]
     )
 
-    deck = Deck(20504900110, "Generated Deck")
+    deck = Deck(20504900110, deck_name)
 
-    for slide in slides:
-        question = f"What is on slide {slide['slide_number']}?"
-        answer = f"{slide['flashcard']}<br><br><i>(Slide {slide['slide_number']})</i>"
+    # Add every card from the flat list
+    for idx, card in enumerate(cards, start=1):
+        question = card.get("question", f"Card {idx}")
+        answer   = card.get("answer", "")
+        expl     = card.get("explanation", "")
+        slide_no = card.get("slide_number", idx)
 
-        note = Note(model=anki_model, fields=[question, answer])
+        answer_field = f"{answer}<br><br><i>{expl}</i> (Slide {slide_no})"
+        note = Note(model=anki_model, fields=[question, answer_field])
         deck.add_note(note)
 
+    # Export deck
     temp_apkg = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
     Package(deck).write_to_file(temp_apkg.name)
 
-    return send_file(temp_apkg.name, as_attachment=True, download_name="flashcards.apkg")
+    # Return the file
+    return send_file(
+        temp_apkg.name,
+        as_attachment=True,
+        download_name=f"{deck_name}.apkg"
+    )
 
 # --- Run app ---
 if __name__ == "__main__":
