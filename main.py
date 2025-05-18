@@ -5,6 +5,9 @@ import fitz                              # PyMuPDF
 from flask import Flask, request, jsonify, send_file
 from genanki import Model, Note, Deck, Package
 
+from PIL import Image
+
+
 # ── Try to import Google Drive API; if missing, skip Drive logic ──
 try:
     from google.oauth2 import service_account
@@ -114,9 +117,19 @@ def download_images_from_drive(folder_id: str, dest_folder: str):
             while not done:
                 _, done = dl.next_chunk()
 
+        # ── BONUS OPTIMIZATION ──
+        try:
+            img = Image.open(path)
+            img.thumbnail((1024, 1024))             # shrink to max 1024px
+            img.save(path, format="JPEG", quality=70)
+            logging.info(f"Optimized image: {name}")
+        except Exception as e:
+            logging.warning(f"Could not optimize {name}: {e}")
+
         downloaded.append(path)
 
     return downloaded
+
 
 
 # ── extract-text endpoint (unchanged) ─────────────────────────
