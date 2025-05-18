@@ -5,3 +5,4 @@ genanki
 gunicorn
 google-api-python-client
 google-auth
+Pillow>=9.0.0
