@@ -181,32 +181,29 @@ def generate_apkg():
         tmp_drive_folder = f"/tmp/{deck_name.replace(' ', '_')}"
         media_files.extend(download_images_from_drive(drive_folder_id, tmp_drive_folder))
 
-    # ── 2) Build cards[] and match each slide’s image ─────────
+    # ── 2) Parse cards & match images (with IMG injection) ────────
     cards = []
     for idx, c in enumerate(raw_cards, 1):
-        slide_no = c.get("slide_number", idx)
-        img_tag  = c.get("image") or c.get("Image") or ""
-        logging.info(f"Card {idx}: slide_number={slide_no}, img_tag={img_tag}")
+        slide_no = c.get("slide_number") or idx
 
-        # Extract explicit filename if provided
-        fname = ""
-        if "<img src='" in img_tag:
-            try:
-                fname = img_tag.split("<img src='")[1].split("'")[0]
-            except IndexError:
-                fname = ""
+        # ignore any incoming img_tag
+        _ = c.get("image") or c.get("Image") or ""
 
+        # A) direct filename match
         matched = None
-        # A) direct match by filename
-        if fname:
-            pd = os.path.join(tmp_drive_folder, fname) if tmp_drive_folder else ""
-            pl = os.path.join(IMAGE_FOLDER, fname)
-            if pd and os.path.exists(pd):
-                matched = pd
-            elif os.path.exists(pl):
-                matched = pl
+        if "<img src='" in _:
+            try:
+                fname = _.split("<img src='")[1].split("'")[0]
+                cand_drive = os.path.join(tmp_drive_folder, fname) if tmp_drive_folder else ""
+                cand_local = os.path.join(IMAGE_FOLDER, fname)
+                if cand_drive and os.path.exists(cand_drive):
+                    matched = cand_drive
+                elif os.path.exists(cand_local):
+                    matched = cand_local
+            except Exception:
+                pass
 
-        # B) suffix match by slide number (00001, 00002, etc.)
+        # B) suffix match by slide number
         if not matched:
             suffix = f"-{str(slide_no).zfill(5)}.jpg"
             for folder in (tmp_drive_folder, IMAGE_FOLDER):
@@ -218,19 +215,24 @@ def generate_apkg():
                     if matched:
                         break
 
+        # build the <img> tag if we found a file
         if matched:
-            logging.info(f"Matched image: {matched}")
             media_files.append(matched)
+            basename = os.path.basename(matched)
+            img_field = f"<img src='{basename}'>"
+        else:
+            img_field = ""
 
         cards.append({
             "question":    c.get("question")    or c.get("Question") or f"Card {idx}",
             "answer":      c.get("answer")      or c.get("Answer")   or "",
             "explanation": c.get("explanation") or c.get("Explanation") or "",
-            "image":       img_tag,
+            "image":       img_field,
             "slide_number": slide_no,
         })
 
     logging.info(f"Final media_files: {media_files}")
+
 
     # ── 3) Build the Anki deck ──────────────────────────────────
     model = Model(
