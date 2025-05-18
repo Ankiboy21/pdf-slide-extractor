@@ -3,3 +3,5 @@ PyMuPDF
 openai
 genanki
 gunicorn
+google-api-python-client
+google-auth
