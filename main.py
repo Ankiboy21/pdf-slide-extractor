@@ -28,9 +28,24 @@ MEDIA_EXTS   = (".png", ".jpg", ".jpeg")
 # Helper: get an authorized Drive service
 # ────────────────────────────────────────────────────────────
 def get_drive_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    # 1) If you’ve uploaded a file in /credentials, use it
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+    else:
+        # 2) Otherwise read your JSON key from an env var
+        sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
+        if not sa_json:
+            raise RuntimeError(
+                "Google Drive service account key not found: "
+                "neither file nor SERVICE_ACCOUNT_JSON env var is set."
+            )
+        info = json.loads(sa_json)
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=SCOPES
+        )
+
     return build("drive", "v3", credentials=creds)
 
 
