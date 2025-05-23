@@ -1,4 +1,8 @@
-import os, io, json, tempfile, logging
+import os
+import io
+import json
+import tempfile
+import logging
 from itertools import chain
 
 import fitz                              # PyMuPDF
@@ -6,7 +10,6 @@ from flask import Flask, request, jsonify, send_file
 from genanki import Model, Note, Deck, Package
 
 from PIL import Image
-
 
 # ── Try to import Google Drive API; if missing, skip Drive logic ──
 try:
@@ -50,6 +53,28 @@ def get_drive_service():
         )
 
     return build("drive", "v3", credentials=creds)
+
+
+# ────────────────────────────────────────────────────────────
+# NEW Helper: share a PDF with your service account
+# ────────────────────────────────────────────────────────────
+def share_file_with_service_account(file_id: str, sa_email: str):
+    service = get_drive_service()
+    try:
+        permission = {
+            "type": "user",
+            "role": "reader",
+            "emailAddress": sa_email,
+        }
+        service.permissions().create(
+            fileId=file_id,
+            body=permission,
+            fields="id",
+            sendNotificationEmail=False,
+        ).execute()
+        logging.info(f"🔒 Shared file {file_id} → {sa_email}")
+    except Exception as e:
+        logging.warning(f"⚠️ Could not share file {file_id} → {sa_email}: {e}")
 
 
 # ────────────────────────────────────────────────────────────
@@ -131,7 +156,6 @@ def download_images_from_drive(folder_id: str, dest_folder: str):
     return downloaded
 
 
-
 # ── extract-text endpoint (unchanged) ─────────────────────────
 @app.route("/extract-text", methods=["POST"])
 def extract_text():
@@ -154,7 +178,7 @@ def extract_text():
     return jsonify({"slides": slides})
 
 
-# ── generate-apkg endpoint (auto folder detection) ──────────────
+# ── generate-apkg endpoint (auto folder detection + sharing) ────
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
     data = request.get_json(silent=True)
@@ -178,7 +202,15 @@ def generate_apkg():
         drive_folder_id   = data.get("image_folder_drive_id")
         lecture_file_id   = data.get("lecture_file_drive_id")
 
-        # ── AUTO-DETECT the image folder if none provided ──
+        # ── NEW: auto‑share the PDF with your service account ──
+        if DRIVE_AVAILABLE and lecture_file_id:
+            try:
+                sa_email = json.load(open(SERVICE_ACCOUNT_FILE))["client_email"]
+                share_file_with_service_account(lecture_file_id, sa_email)
+            except Exception as e:
+                logging.warning(f"Could not auto‑share lecture PDF: {e}")
+
+        # ── AUTO‑DETECT the image folder if none provided ──
         if not drive_folder_id and lecture_file_id and DRIVE_AVAILABLE:
             drive_folder_id = find_matching_folder_for_pdf(lecture_file_id)
 
@@ -198,15 +230,13 @@ def generate_apkg():
     cards = []
     for idx, c in enumerate(raw_cards, 1):
         slide_no = c.get("slide_number") or idx
-
-        # ignore any incoming img_tag
-        _ = c.get("image") or c.get("Image") or ""
+        _img_tag = c.get("image") or c.get("Image") or ""
 
         # A) direct filename match
         matched = None
-        if "<img src='" in _:
+        if "<img src='" in _img_tag:
             try:
-                fname = _.split("<img src='")[1].split("'")[0]
+                fname = _img_tag.split("<img src='")[1].split("'")[0]
                 cand_drive = os.path.join(tmp_drive_folder, fname) if tmp_drive_folder else ""
                 cand_local = os.path.join(IMAGE_FOLDER, fname)
                 if cand_drive and os.path.exists(cand_drive):
@@ -228,11 +258,9 @@ def generate_apkg():
                     if matched:
                         break
 
-        # build the <img> tag if we found a file
         if matched:
             media_files.append(matched)
-            basename = os.path.basename(matched)
-            img_field = f"<img src='{basename}'>"
+            img_field = f"<img src='{os.path.basename(matched)}'>"
         else:
             img_field = ""
 
@@ -245,7 +273,6 @@ def generate_apkg():
         })
 
     logging.info(f"Final media_files: {media_files}")
-
 
     # ── 3) Build the Anki deck ──────────────────────────────────
     model = Model(
@@ -277,7 +304,7 @@ def generate_apkg():
 .image { color:#aaa; font-size:18px; margin-top:12px; }
 .card img { display:block; margin:0 auto; transform:scale(.6); transform-origin:center; transition:transform .3s ease-in-out; cursor:pointer; }
 .card img:hover { transform:scale(1); }
-"""
+""",
     )
 
     deck = Deck(20504900110, deck_name)
