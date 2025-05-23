@@ -7,7 +7,6 @@ from genanki import Model, Note, Deck, Package
 
 from PIL import Image
 
-
 # ── Try to import Google Drive API; if missing, skip Drive logic ──
 try:
     from google.oauth2 import service_account
@@ -26,18 +25,15 @@ SCOPES       = ["https://www.googleapis.com/auth/drive.readonly"]
 SERVICE_ACCOUNT_FILE = "credentials/drive_service_account.json"
 MEDIA_EXTS   = (".png", ".jpg", ".jpeg")
 
-
 # ────────────────────────────────────────────────────────────
 # Helper: get an authorized Drive service
 # ────────────────────────────────────────────────────────────
 def get_drive_service():
-    # 1) If you’ve uploaded a file in /credentials, use it
     if os.path.exists(SERVICE_ACCOUNT_FILE):
         creds = service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE, scopes=SCOPES
         )
     else:
-        # 2) Otherwise read your JSON key from an env var
         sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
         if not sa_json:
             raise RuntimeError(
@@ -48,89 +44,7 @@ def get_drive_service():
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=SCOPES
         )
-
     return build("drive", "v3", credentials=creds)
-
-
-# ────────────────────────────────────────────────────────────
-# Helper: find the image-folder that matches a PDF in the same parent
-# ────────────────────────────────────────────────────────────
-def find_matching_folder_for_pdf(pdf_file_id: str):
-    service = get_drive_service()
-    # 1) fetch the PDF's metadata
-    meta = service.files().get(
-        fileId=pdf_file_id, fields="name,parents"
-    ).execute()
-    pdf_name = meta["name"]
-    # remove trailing .pdf if present
-    folder_name = pdf_name[:-4] if pdf_name.lower().endswith(".pdf") else pdf_name
-    parent_id = meta["parents"][0]
-
-    logging.info(f"Searching parent folder {parent_id} for subfolder named '{folder_name}'")
-    # 2) search for a folder with that name
-    qry = (
-        f"'{parent_id}' in parents and "
-        "mimeType='application/vnd.google-apps.folder' and "
-        f"name='{folder_name}' and trashed=false"
-    )
-    resp = service.files().list(q=qry, fields="files(id,name)").execute()
-    matches = resp.get("files", [])
-    if not matches:
-        logging.warning("No matching subfolder found")
-        return None
-
-    folder_id = matches[0]["id"]
-    logging.info(f"Auto-detected image folder: {matches[0]['name']} ({folder_id})")
-    return folder_id
-
-
-# ────────────────────────────────────────────────────────────
-# Helper: download all images from a Drive folder
-# ────────────────────────────────────────────────────────────
-def download_images_from_drive(folder_id: str, dest_folder: str):
-    if not DRIVE_AVAILABLE:
-        return []
-
-    service = get_drive_service()
-    os.makedirs(dest_folder, exist_ok=True)
-
-    qry = (
-        f"'{folder_id}' in parents "
-        "and mimeType contains 'image/' "
-        "and trashed=false"
-    )
-    files = service.files().list(q=qry, fields="files(id,name)").execute().get("files", [])
-    logging.info(f"Found {len(files)} images in Drive folder {folder_id}")
-
-    downloaded = []
-    for f in files:
-        name = f["name"]
-        if not name.lower().endswith(MEDIA_EXTS):
-            continue
-
-        path = os.path.join(dest_folder, name)
-        logging.info(f"Downloading {name} → {path}")
-        req = service.files().get_media(fileId=f["id"])
-        with io.FileIO(path, "wb") as fh:
-            dl = MediaIoBaseDownload(fh, req)
-            done = False
-            while not done:
-                _, done = dl.next_chunk()
-
-        # ── BONUS OPTIMIZATION ──
-        try:
-            img = Image.open(path)
-            img.thumbnail((1024, 1024))             # shrink to max 1024px
-            img.save(path, format="JPEG", quality=70)
-            logging.info(f"Optimized image: {name}")
-        except Exception as e:
-            logging.warning(f"Could not optimize {name}: {e}")
-
-        downloaded.append(path)
-
-    return downloaded
-
-
 
 # ── extract-text endpoint (unchanged) ─────────────────────────
 @app.route("/extract-text", methods=["POST"])
@@ -153,7 +67,6 @@ def extract_text():
     os.remove(tmp.name)
     return jsonify({"slides": slides})
 
-
 # ── generate-apkg endpoint (auto folder detection) ──────────────
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
@@ -170,84 +83,37 @@ def generate_apkg():
     # Unpack incoming payload
     if isinstance(data, list):
         raw_cards, deck_name = data, "Lecture Deck"
-        drive_folder_id = None
-        lecture_file_id = None
     else:
         raw_cards = data.get("cards") or data.get("Array") or []
         deck_name = data.get("deck_name", "Lecture Deck")
-        drive_folder_id   = data.get("image_folder_drive_id")
-        lecture_file_id   = data.get("lecture_file_drive_id")
-
-        # ── AUTO-DETECT the image folder if none provided ──
-        if not drive_folder_id and lecture_file_id and DRIVE_AVAILABLE:
-            drive_folder_id = find_matching_folder_for_pdf(lecture_file_id)
 
     if raw_cards and isinstance(raw_cards[0], list):
         raw_cards = list(chain.from_iterable(raw_cards))
     if not raw_cards:
         return jsonify({"error": "Missing cards"}), 400
 
-    # ── 1) Download images from Drive if we have a folder ──────
-    tmp_drive_folder = ""
-    media_files = []
-    if drive_folder_id and DRIVE_AVAILABLE:
-        tmp_drive_folder = f"/tmp/{deck_name.replace(' ', '_')}"
-        media_files.extend(download_images_from_drive(drive_folder_id, tmp_drive_folder))
-
-    # ── 2) Parse cards & match images (with IMG injection) ────────
+    # Build cards without images, support multiple slide numbers
     cards = []
     for idx, c in enumerate(raw_cards, 1):
-        slide_no = c.get("slide_number") or idx
+        # Extract core fields
+        question    = c.get("question")    or c.get("Question") or f"Card {idx}"
+        answer      = c.get("answer")      or c.get("Answer")   or ""
+        explanation = c.get("explanation") or c.get("Explanation") or ""
 
-        # ignore any incoming img_tag
-        _ = c.get("image") or c.get("Image") or ""
-
-        # A) direct filename match
-        matched = None
-        if "<img src='" in _:
-            try:
-                fname = _.split("<img src='")[1].split("'")[0]
-                cand_drive = os.path.join(tmp_drive_folder, fname) if tmp_drive_folder else ""
-                cand_local = os.path.join(IMAGE_FOLDER, fname)
-                if cand_drive and os.path.exists(cand_drive):
-                    matched = cand_drive
-                elif os.path.exists(cand_local):
-                    matched = cand_local
-            except Exception:
-                pass
-
-        # B) suffix match by slide number
-        if not matched:
-            suffix = f"-{str(slide_no).zfill(5)}.jpg"
-            for folder in (tmp_drive_folder, IMAGE_FOLDER):
-                if folder and os.path.isdir(folder):
-                    for f_name in os.listdir(folder):
-                        if f_name.lower().endswith(suffix):
-                            matched = os.path.join(folder, f_name)
-                            break
-                    if matched:
-                        break
-
-        # build the <img> tag if we found a file
-        if matched:
-            media_files.append(matched)
-            basename = os.path.basename(matched)
-            img_field = f"<img src='{basename}'>"
+        # Slide number logic: int or list
+        sn = c.get("slide_number")
+        if isinstance(sn, list):
+            slide_label = "Slides " + ", ".join(str(n) for n in sn)
+        elif isinstance(sn, int):
+            slide_label = f"Slide {sn}"
         else:
-            img_field = ""
+            slide_label = f"Slide {idx}"
 
-        cards.append({
-            "question":    c.get("question")    or c.get("Question") or f"Card {idx}",
-            "answer":      c.get("answer")      or c.get("Answer")   or "",
-            "explanation": c.get("explanation") or c.get("Explanation") or "",
-            "image":       img_field,
-            "slide_number": slide_no,
-        })
+        # Append slide info to explanation
+        full_expl = f"{explanation} ({slide_label})"
+        cards.append((question, answer, full_expl))
 
-    logging.info(f"Final media_files: {media_files}")
-
-
-    # ── 3) Build the Anki deck ──────────────────────────────────
+    # Define Anki model (no image field)
     model = Model(
         1607392319,
         "Styled Lecture Model",
@@ -255,7 +121,6 @@ def generate_apkg():
             {"name": "Question"},
             {"name": "Answer"},
             {"name": "Explanation"},
-            {"name": "Image"},
         ],
         templates=[{
             "name": "Card 1",
@@ -265,44 +130,33 @@ def generate_apkg():
 <hr>
 <div class='answer'>{{Answer}}</div>
 <div class='explanation'>{{Explanation}}</div>
-<div class='image'>{{Image}}</div>
 """
         }],
         css="""
-/* Your existing CSS: dark theme, centered, hover-zoom on img */
 .card { font-family:Arial; font-size:26px; text-align:center; background:#1e1e1e; color:#fff; }
 .question { font-size:28px; margin-bottom:10px; }
 .answer   { color:#4da6ff; font-weight:bold; margin:8px 0; }
 .explanation { color:#ff66cc; font-style:italic; margin-top:10px; }
-.image { color:#aaa; font-size:18px; margin-top:12px; }
-.card img { display:block; margin:0 auto; transform:scale(.6); transform-origin:center; transition:transform .3s ease-in-out; cursor:pointer; }
-.card img:hover { transform:scale(1); }
 """
     )
 
+    # Create deck and add notes
     deck = Deck(20504900110, deck_name)
-    for note_data in cards:
+    for q, a, full_expl in cards:
         note = Note(
             model=model,
-            fields=[
-                note_data["question"],
-                note_data["answer"],
-                f"{note_data['explanation']} (Slide {note_data['slide_number']})",
-                note_data["image"],
-            ]
+            fields=[q, a, full_expl]
         )
         deck.add_note(note)
 
-    # ── 4) Write and return the .apkg ─────────────────────────
+    # Write and return the .apkg
     tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
-    Package(deck, media_files=media_files).write_to_file(tmpf.name)
+    Package(deck).write_to_file(tmpf.name)
     return send_file(tmpf.name, as_attachment=True, download_name=f"{deck_name}.apkg")
-
 
 @app.route("/", methods=["GET"])
 def home():
     return "Server is running ✅", 200
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
