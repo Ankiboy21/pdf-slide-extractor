@@ -143,7 +143,7 @@ def generate_apkg():
                 data = json.loads(data)
             except:
                 app.logger.error("❌ Bad JSON in /generate-apkg")
-                return jsonify({"error": "Bad JSON"}), 400
+                return jsonify({"error": "Bad JSON"}], 400)
         if isinstance(data, list):
             raw_cards = data
             deck_name = "Lecture Deck"
@@ -154,7 +154,7 @@ def generate_apkg():
             lecture_file_id = data.get("lecture_file_drive_id")
         if not raw_cards:
             app.logger.error("❌ Missing cards in /generate-apkg payload")
-            return jsonify({"error": "Missing cards"}), 400
+            return jsonify({"error": "Missing cards"}], 400)
         app.logger.info(f"   • parsing {len(raw_cards)} cards")
 
         tmp_img_folder = None
@@ -197,11 +197,18 @@ def generate_apkg():
         model = Model(
             1607392319,
             "Lecture Model",
-            fields=[{"name":"Question"},{"name":"Answer"},{"name":"Explanation"},{"name":"Image"},{"name":"Slide Number"}],
-            templates=[{{
+            fields=[
+                {"name":"Question"},
+                {"name":"Answer"},
+                {"name":"Explanation"},
+                {"name":"Image"},
+                {"name":"Slide Number"}
+            ],
+            templates=[{
                 "name":"Card 1",
                 "qfmt":"<div class='question'>{{Question}}</div>",
-                "afmt":"""
+                "afmt":
+"""
 <div class='question'>{{Question}}</div>
 <hr>
 <div class='answer'>{{Answer}}</div>
@@ -209,7 +216,7 @@ def generate_apkg():
 <div class='image'>{{Image}}</div>
 <div class='slide-number'>Slide {{Slide Number}}</div>
 """
-            }}],
+            }],
             css="""
 .card{font-family:Arial;font-size:26px;text-align:center;background:#1e1e1e;color:#fff;}
 .question{font-size:28px;margin-bottom:10px;}
@@ -242,7 +249,7 @@ def generate_apkg():
         return send_file(tmpf.name, as_attachment=True, download_name=f"{deck_name}.apkg")
     except Exception:
         app.logger.exception("❌ Unexpected error in /generate-apkg")
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error": "Internal server error"}], 500)
 
 @app.route("/", methods=["GET"])
 def home():
