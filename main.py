@@ -1,3 +1,4 @@
+import sys
 import os, io, json, tempfile, logging
 from itertools import chain
 
@@ -11,7 +12,13 @@ from PIL import Image
 
 # ── Configuration ─────────────────────────────────────────────────
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+
+# ── Send all logs to stdout so the host can pick them up ───────────
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
 
 IMAGE_FOLDER = "images"  # local fallback for slide‐matched images
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -22,6 +29,7 @@ MEDIA_EXTS = (".png", ".jpg", ".jpeg")
 # Helper: get an authorized Drive service
 # ────────────────────────────────────────────────────────────
 def get_drive_service():
+    app.logger.info("🔑 Obtaining Drive service credentials")
     if os.path.exists(SERVICE_ACCOUNT_FILE):
         creds = service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE, scopes=SCOPES
@@ -40,6 +48,7 @@ def get_drive_service():
 # Helper: find matching image folder for a PDF
 # ────────────────────────────────────────────────────────────
 def find_matching_folder_for_pdf(pdf_file_id: str):
+    app.logger.info(f"🔍 Finding image folder for PDF file ID {pdf_file_id}")
     service = get_drive_service()
     meta = service.files().get(fileId=pdf_file_id, fields="name,parents").execute()
     name = meta.get("name", "").rstrip()
@@ -47,19 +56,21 @@ def find_matching_folder_for_pdf(pdf_file_id: str):
     parent_id = meta.get("parents", [None])[0]
     if not parent_id:
         return None
-
     qry = (
         f"'{parent_id}' in parents and "
         "mimeType='application/vnd.google-apps.folder' and "
         f"name='{folder_name}' and trashed=false"
     )
     resp = service.files().list(q=qry, fields="files(id)").execute().get("files", [])
-    return resp[0]["id"] if resp else None
+    folder_id = resp[0]["id"] if resp else None
+    app.logger.info(f"📁 Auto-detected image folder ID: {folder_id}")
+    return folder_id
 
 # ────────────────────────────────────────────────────────────
 # Helper: download all images from Drive folder
 # ────────────────────────────────────────────────────────────
 def download_images_from_drive(folder_id: str, dest_folder: str):
+    app.logger.info(f"⬇️ Downloading images from Drive folder {folder_id}")
     service = get_drive_service()
     os.makedirs(dest_folder, exist_ok=True)
     qry = f"'{folder_id}' in parents and mimeType contains 'image/' and trashed=false"
@@ -70,26 +81,27 @@ def download_images_from_drive(folder_id: str, dest_folder: str):
         if not name.lower().endswith(MEDIA_EXTS):
             continue
         path = os.path.join(dest_folder, name)
-        req = service.files().get_media(fileId=f["id"])
         with io.FileIO(path, "wb") as fh:
-            dl = MediaIoBaseDownload(fh, req)
+            dl = MediaIoBaseDownload(fh, service.files().get_media(fileId=f["id"]))
             done = False
             while not done:
                 _, done = dl.next_chunk()
-        # Optimize
         try:
             img = Image.open(path)
             img.thumbnail((1024, 1024))
             img.save(path, format="JPEG", quality=70)
-        except Exception:
-            pass
+        except Exception as e:
+            app.logger.warning(f"Could not optimize image {name}: {e}")
         downloaded.append(path)
+    app.logger.info(f"✅ Downloaded {len(downloaded)} images")
     return downloaded
 
 # ── extract-text endpoint ─────────────────────────────────
 @app.route("/extract-text", methods=["POST"])
 def extract_text():
+    app.logger.info("▶️ /extract-text called")
     if "file" not in request.files:
+        app.logger.error("❌ No file uploaded to /extract-text")
         return jsonify({"error": "No file uploaded"}), 400
     uploaded = request.files["file"]
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -101,18 +113,21 @@ def extract_text():
     ]
     doc.close()
     os.remove(tmp.name)
+    app.logger.info(f"📃 Extracted text from {len(slides)} slides")
     return jsonify({"slides": slides})
 
 # ── generate-apkg endpoint ─────────────────────────────────
 @app.route("/generate-apkg", methods=["POST"])
 def generate_apkg():
+    app.logger.info("▶️ /generate-apkg called")
     data = request.get_json(silent=True)
+    app.logger.info(f"   • payload keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except:
+            app.logger.error("❌ Bad JSON in /generate-apkg")
             return jsonify({"error": "Bad JSON"}), 400
-    # Determine incoming cards
     if isinstance(data, list):
         raw_cards = data
         deck_name = "Lecture Deck"
@@ -122,9 +137,10 @@ def generate_apkg():
         deck_name = data.get("deck_name", "Lecture Deck")
         lecture_file_id = data.get("lecture_file_drive_id")
     if not raw_cards:
+        app.logger.error("❌ Missing cards in /generate-apkg payload")
         return jsonify({"error": "Missing cards"}), 400
+    app.logger.info(f"   • parsing {len(raw_cards)} cards")
 
-    # Auto‑detect image folder
     tmp_img_folder = None
     media_files = []
     if lecture_file_id:
@@ -133,18 +149,16 @@ def generate_apkg():
             if folder_id:
                 tmp_img_folder = f"/tmp/{deck_name.replace(' ','_')}"
                 media_files = download_images_from_drive(folder_id, tmp_img_folder)
-        except Exception:
-            logging.warning("Could not auto‑download images")
+        except Exception as e:
+            app.logger.warning(f"Could not auto‑download images: {e}")
 
-    # Prepare cards with image tags and slide_number field
     processed = []
     for idx, c in enumerate(raw_cards, start=1):
-        q = c.get("question","Card {idx}")
-        a = c.get("answer","")
-        e = c.get("explanation","")
+        q = c.get("question", f"Card {idx}")
+        a = c.get("answer", "")
+        e = c.get("explanation", "")
         sn = c.get("slide_number") or idx
         nums = sn if isinstance(sn, list) else [sn]
-        # Match images by slide numbers
         img_tags = []
         for num in nums:
             suffix = f"-{str(num).zfill(5)}.jpg"
@@ -152,30 +166,22 @@ def generate_apkg():
                 if folder and os.path.isdir(folder):
                     for name in os.listdir(folder):
                         if name.lower().endswith(suffix):
-                            path = os.path.join(folder, name)
-                            media_files.append(path)
+                            media_files.append(os.path.join(folder, name))
                             img_tags.append(f"<img src='{name}'>")
                             break
-        img_field = "".join(img_tags)
         processed.append({
-            "question":    q,
-            "answer":      a,
+            "question": q,
+            "answer": a,
             "explanation": e,
-            "image":       img_field,
+            "image": "".join(img_tags),
             "slide_number": nums
         })
+    app.logger.info(f"   • built {len(processed)} flashcards")
 
-    # Build Anki model with Slide Number field
     model = Model(
         1607392319,
         "Lecture Model",
-        fields=[
-            {"name":"Question"},
-            {"name":"Answer"},
-            {"name":"Explanation"},
-            {"name":"Image"},
-            {"name":"Slide Number"}
-        ],
+        fields=[{"name":"Question"},{"name":"Answer"},{"name":"Explanation"},{"name":"Image"},{"name":"Slide Number"}],
         templates=[{
             "name":"Card 1",
             "qfmt":"<div class='question'>{{Question}}</div>",
@@ -201,7 +207,6 @@ def generate_apkg():
 """
     )
 
-    # Create deck and add notes
     deck = Deck(20504900110, deck_name)
     for note in processed:
         n = Note(
@@ -216,9 +221,9 @@ def generate_apkg():
         )
         deck.add_note(n)
 
-    # Write and return .apkg
     tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".apkg")
     Package(deck, media_files=media_files).write_to_file(tmpf.name)
+    app.logger.info("✔️ Done; sending .apkg")
     return send_file(tmpf.name, as_attachment=True, download_name=f"{deck_name}.apkg")
 
 @app.route("/", methods=["GET"])
@@ -226,4 +231,5 @@ def home():
     return "Server is running ✅", 200
 
 if __name__ == '__main__':
+    app.logger.info("🏁 Starting Flask server on 0.0.0.0:10000")
     app.run(host='0.0.0.0', port=10000)
