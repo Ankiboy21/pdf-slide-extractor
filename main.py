@@ -13,6 +13,12 @@ from PIL import Image
 # ── Configuration ─────────────────────────────────────────────────
 app = Flask(__name__)
 
+# allow up to 50 MB request bodies (default is unlimited, but best to be explicit)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+
+# …then your logging setup, etc…
+
+
 # ── Send all logs to stdout so the host can pick them up ───────────
 handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.INFO)
