@@ -4,10 +4,8 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --capture-output --access-logfile - --timeout 300
+    nginx:
+      # allow up to 50 MB request bodies
+      client_max_body_size: 50m
     autoDeploy: false
-    services:
-  - type: web
-    name: pdf-slide-extractor
-    env: python
-    entrypoint: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 300
