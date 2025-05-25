@@ -143,7 +143,8 @@ def generate_apkg():
                 data = json.loads(data)
             except:
                 app.logger.error("❌ Bad JSON in /generate-apkg")
-                return jsonify({"error": "Bad JSON"}], 400)
+                return jsonify({"error": "Bad JSON"}), 400
+
         if isinstance(data, list):
             raw_cards = data
             deck_name = "Lecture Deck"
@@ -152,13 +153,15 @@ def generate_apkg():
             raw_cards = data.get("cards", [])
             deck_name = data.get("deck_name", "Lecture Deck")
             lecture_file_id = data.get("lecture_file_drive_id")
+
         if not raw_cards:
             app.logger.error("❌ Missing cards in /generate-apkg payload")
-            return jsonify({"error": "Missing cards"}], 400)
-        app.logger.info(f"   • parsing {len(raw_cards)} cards")
+            return jsonify({"error": "Missing cards"}), 400
 
+        app.logger.info(f"   • parsing {len(raw_cards)} cards")
         tmp_img_folder = None
         media_files = []
+
         if lecture_file_id:
             try:
                 folder_id = find_matching_folder_for_pdf(lecture_file_id)
@@ -175,6 +178,7 @@ def generate_apkg():
             e = c.get("explanation", "")
             sn = c.get("slide_number") or idx
             nums = sn if isinstance(sn, list) else [sn]
+
             img_tags = []
             for num in nums:
                 suffix = f"-{str(num).zfill(5)}.jpg"
@@ -183,8 +187,9 @@ def generate_apkg():
                         for name in os.listdir(folder):
                             if name.lower().endswith(suffix):
                                 media_files.append(os.path.join(folder, name))
-                                img_tags.append(f"<img src='{name}'>")
+                                img_tags.append(f"<img src='{name}'>")  
                                 break
+
             processed.append({
                 "question": q,
                 "answer": a,
@@ -192,6 +197,7 @@ def generate_apkg():
                 "image": "".join(img_tags),
                 "slide_number": nums
             })
+
         app.logger.info(f"   • built {len(processed)} flashcards")
 
         model = Model(
@@ -202,13 +208,12 @@ def generate_apkg():
                 {"name":"Answer"},
                 {"name":"Explanation"},
                 {"name":"Image"},
-                {"name":"Slide Number"}
+                {"name":"Slide Number"},
             ],
             templates=[{
                 "name":"Card 1",
                 "qfmt":"<div class='question'>{{Question}}</div>",
-                "afmt":
-"""
+                "afmt": """
 <div class='question'>{{Question}}</div>
 <hr>
 <div class='answer'>{{Answer}}</div>
@@ -230,16 +235,15 @@ def generate_apkg():
         )
 
         deck = Deck(20504900110, deck_name)
-        for note in processed:
+        for note_data in processed:
             n = Note(
                 model=model,
                 fields=[
-                    note["question"],
-                    note["answer"],
-                    note["explanation"],
-                    note["image"],
-                    ",".join(str(x) for x in note["slide_number"])
-                ]
+                    note_data["question"],
+                    note_data["answer"],
+                    note_data["explanation"],
+                    note_data["image"],
+                    ",".join(str(x) for x in note_data["slide_number"])]
             )
             deck.add_note(n)
 
@@ -247,9 +251,10 @@ def generate_apkg():
         Package(deck, media_files=media_files).write_to_file(tmpf.name)
         app.logger.info("✔️ Done; sending .apkg")
         return send_file(tmpf.name, as_attachment=True, download_name=f"{deck_name}.apkg")
+
     except Exception:
         app.logger.exception("❌ Unexpected error in /generate-apkg")
-        return jsonify({"error": "Internal server error"}], 500)
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/", methods=["GET"])
 def home():
